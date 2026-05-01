@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import AuthPage from "./AuthPage.jsx";
 import logo from "./assets/logo.png";
 import { authAPI } from "./api.js";
@@ -15,6 +15,8 @@ import AdminTransactions from "./pages/AdminArea/AdminTransactions.jsx";
 import AdminReports from "./pages/AdminArea/AdminReports.jsx";
 import AdminSettings from "./pages/AdminArea/AdminSettings.jsx";
 import AdminOverview from "./pages/AdminArea/AdminOverview.jsx";
+import Adminsupport from "./pages/AdminArea/Adminsupport.jsx";
+import Studentsupport from "./pages/Student/Studentsupport.jsx";
 
 const STUDENT_NAV = [
   { id: "dashboard", label: "Dashboard", icon: "🏠" },
@@ -24,6 +26,7 @@ const STUDENT_NAV = [
   { id: "transactions", label: "History", icon: "📋" },
   { id: "linked", label: "Linked Accounts", icon: "🔗" },
   { id: "notifications", label: "Notifications", icon: "🔔" },
+  { id: "support", label: "Support", icon: "🛟" },
 ];
 
 const ADMIN_NAV = [
@@ -33,6 +36,7 @@ const ADMIN_NAV = [
   { id: "transactions", label: "Transactions", icon: "💰" },
   { id: "reports", label: "Reports", icon: "📄" },
   { id: "settings", label: "Settings", icon: "⚙️" },
+  { id: "support", label: "Support", icon: "🛟" },
 ];
 
 function normalizeUser(user) {
@@ -42,6 +46,33 @@ function normalizeUser(user) {
     studentId: user.studentId || user.student_id || user.studentID || "",
     role: user.role || "student",
   };
+}
+
+function renderStudentPage(page, user, onNavigate) {
+  switch (page) {
+    case "dashboard":    return <StudentDashboard user={user} onNavigate={onNavigate} />;
+    case "wallet":       return <StudentWallet user={user} />;
+    case "funds":        return <StudentFunds user={user} />;
+    case "payments":     return <StudentPayments user={user} />;
+    case "transactions": return <StudentTransactions user={user} />;
+    case "linked":       return <StudentLinkedAccounts user={user} />;
+    case "notifications":return <StudentNotifications user={user} />;
+    case "support":      return <Studentsupport user={user} />;
+    default:             return <StudentDashboard user={user} onNavigate={onNavigate} />;
+  }
+}
+
+function renderAdminPage(page, user, onNavigate) {
+  switch (page) {
+    case "dashboard":    return <AdminDashboard user={user} onNavigate={onNavigate} />;
+    case "overview":     return <AdminOverview user={user} />;
+    case "students":     return <AdminStudents user={user} />;
+    case "transactions": return <AdminTransactions user={user} />;
+    case "reports":      return <AdminReports user={user} />;
+    case "settings":     return <AdminSettings user={user} />;
+    case "support":      return <Adminsupport user={user} />;
+    default:             return <AdminDashboard user={user} onNavigate={onNavigate} />;
+  }
 }
 
 export default function App() {
@@ -79,31 +110,6 @@ export default function App() {
     setActivePage("dashboard");
   };
 
-  const studentPages = useMemo(
-    () => ({
-      dashboard: <StudentDashboard user={user} onNavigate={setActivePage} />,
-      wallet: <StudentWallet user={user} />,
-      funds: <StudentFunds user={user} />,
-      payments: <StudentPayments user={user} />,
-      transactions: <StudentTransactions user={user} />,
-      linked: <StudentLinkedAccounts user={user} />,
-      notifications: <StudentNotifications user={user} />,
-    }),
-    [user]
-  );
-
-  const adminPages = useMemo(
-    () => ({
-      dashboard: <AdminDashboard user={user} onNavigate={setActivePage} />,
-      overview: <AdminOverview user={user} />,
-      students: <AdminStudents user={user} />,
-      transactions: <AdminTransactions user={user} />,
-      reports: <AdminReports user={user} />,
-      settings: <AdminSettings user={user} />,
-    }),
-    [user]
-  );
-
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-slate-200">
@@ -134,7 +140,7 @@ export default function App() {
         subtitle="Admin Panel"
         logo={logo}
       >
-        {adminPages[activePage] || adminPages.dashboard}
+        {renderAdminPage(activePage, user, setActivePage)}
       </ResponsiveLayout>
     );
   }
@@ -150,7 +156,7 @@ export default function App() {
       subtitle="Student Portal"
       logo={logo}
     >
-      {studentPages[activePage] || studentPages.dashboard}
+      {renderStudentPage(activePage, user, setActivePage)}
     </ResponsiveLayout>
   );
 }

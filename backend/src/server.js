@@ -12,6 +12,7 @@ const walletRoutes = require("./routes/wallet.routes");
 const transactionRoutes = require("./routes/transaction.routes");
 const paymentMethodRoutes = require("./routes/paymentMethod.routes");
 const adminRoutes = require("./routes/admin.routes");
+const messageRoutes = require("./routes/Message.routes"); // ← ADDED
 
 const app = express();
 
@@ -63,6 +64,7 @@ app.use("/api/wallet", walletRoutes);
 app.use("/api/transactions", transactionRoutes);
 app.use("/api/payment-methods", paymentMethodRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/messages", messageRoutes); // ← ADDED
 
 app.get("/api/health", (req, res) => {
   res.json({ success: true, status: "UCash API is running", timestamp: new Date() });

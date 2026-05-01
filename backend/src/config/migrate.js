@@ -1,5 +1,5 @@
 require("dotenv").config();
-const { pool, connectDB } = require("./db");
+const { pool, connectDB } = require("../config/db"); // same import style as your migrate.js
 
 const migrate = async () => {
   await connectDB();
@@ -97,6 +97,24 @@ const migrate = async () => {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
     console.log("  ✅ Table: payment_methods");
+
+    // ── messages ──────────────────────────────────────────────
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        sender_id   INT UNSIGNED NOT NULL,
+        receiver_id INT UNSIGNED NOT NULL,
+        message     TEXT NOT NULL,
+        role        ENUM('student','admin') NOT NULL,
+        created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_msg_sender   FOREIGN KEY (sender_id)   REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_msg_receiver FOREIGN KEY (receiver_id) REFERENCES users(id) ON DELETE CASCADE,
+        INDEX idx_msg_sender   (sender_id),
+        INDEX idx_msg_receiver (receiver_id),
+        INDEX idx_msg_created  (created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    console.log("  ✅ Table: messages");
 
     console.log("\n✅ All migrations complete.");
   } catch (err) {
