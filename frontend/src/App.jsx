@@ -9,6 +9,7 @@ import StudentTransactions from "./pages/Student/StudentTransactions.jsx";
 import StudentLinkedAccounts from "./pages/Student/StudentLinkedAccounts.jsx";
 import StudentNotifications from "./pages/Student/StudentNotifications.jsx";
 import StudentWallet from "./pages/Student/StudentWallet.jsx";
+import Studentsupport from "./pages/Student/Studentsupport.jsx";
 import AdminDashboard from "./pages/AdminArea/AdminDashboard.jsx";
 import AdminStudents from "./pages/AdminArea/AdminStudents.jsx";
 import AdminTransactions from "./pages/AdminArea/AdminTransactions.jsx";
@@ -16,7 +17,6 @@ import AdminReports from "./pages/AdminArea/AdminReports.jsx";
 import AdminSettings from "./pages/AdminArea/AdminSettings.jsx";
 import AdminOverview from "./pages/AdminArea/AdminOverview.jsx";
 import Adminsupport from "./pages/AdminArea/Adminsupport.jsx";
-import Studentsupport from "./pages/Student/Studentsupport.jsx";
 
 const STUDENT_NAV = [
   { id: "dashboard", label: "Dashboard", icon: "🏠" },
