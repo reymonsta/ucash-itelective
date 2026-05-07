@@ -1,7 +1,8 @@
-const mysql = require("mysql2/promise");
+require("dotenv").config();
+const { Pool } = require("pg");
 
 // ── Validate required env vars on startup ────────────────────
-const required = ["DB_HOST", "DB_USER", "DB_NAME", "JWT_SECRET"];
+const required = ["DATABASE_URL", "JWT_SECRET"];
 for (const key of required) {
   if (!process.env[key]) {
     console.error(`❌ Missing required environment variable: ${key}`);
@@ -15,29 +16,26 @@ if (process.env.JWT_SECRET.length < 32) {
 }
 
 // ── Create connection pool ────────────────────────────────────
-const pool = mysql.createPool({
-  host:               process.env.DB_HOST,
-  port:               Number(process.env.DB_PORT) || 3306,
-  user:               process.env.DB_USER,
-  password:           process.env.DB_PASSWORD,
-  database:           process.env.DB_NAME,
-  waitForConnections: true,
-  connectionLimit:    10,
-  queueLimit:         0,
-  // Return JS Date objects for DATETIME columns
-  dateStrings:        false,
-  // Automatically parse numbers correctly
-  decimalNumbers:     true,
+// We use a single DATABASE_URL connection string (Supabase provides this).
+// SSL is required by Supabase in production.
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false, // Required for Supabase hosted PostgreSQL
+  },
+  max: 10,              // Maximum number of connections in the pool
+  idleTimeoutMillis: 30000,   // Close idle connections after 30 seconds
+  connectionTimeoutMillis: 5000, // Fail fast if can't connect within 5s
 });
 
 // ── Test connection on startup ────────────────────────────────
 const connectDB = async () => {
   try {
-    const conn = await pool.getConnection();
-    console.log(`✅ MySQL connected: ${process.env.DB_HOST}/${process.env.DB_NAME}`);
-    conn.release();
+    const client = await pool.connect();
+    console.log(`✅ PostgreSQL connected via Supabase`);
+    client.release(); // Always release the client back to the pool
   } catch (error) {
-    console.error("❌ MySQL connection failed:", error.message);
+    console.error("❌ PostgreSQL connection failed:", error.message);
     process.exit(1);
   }
 };

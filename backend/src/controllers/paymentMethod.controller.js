@@ -3,8 +3,8 @@ const { pool } = require("../config/db");
 // ── GET /api/payment-methods ──────────────────────────────────
 const getMyPaymentMethods = async (req, res) => {
   try {
-    const [rows] = await pool.query(
-      "SELECT * FROM payment_methods WHERE user_id = ? ORDER BY is_primary DESC, created_at ASC",
+    const { rows } = await pool.query(
+      "SELECT * FROM payment_methods WHERE user_id = $1 ORDER BY is_primary DESC, created_at ASC",
       [req.user.id]
     );
     return res.json({ success: true, methods: rows });
@@ -16,7 +16,7 @@ const getMyPaymentMethods = async (req, res) => {
 
 // ── POST /api/payment-methods ─────────────────────────────────
 const addPaymentMethod = async (req, res) => {
-  const conn = await pool.getConnection();
+  const client = await pool.connect();
   try {
     const { type, accountNumber, accountName, isPrimary } = req.body;
 
@@ -29,91 +29,91 @@ const addPaymentMethod = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid payment method type." });
     }
 
-    // Unique constraint (user_id, type) enforced by DB — catch duplicate gracefully
-    const [existing] = await conn.query(
-      "SELECT id FROM payment_methods WHERE user_id = ? AND type = ?",
+    const { rows: existing } = await client.query(
+      "SELECT id FROM payment_methods WHERE user_id = $1 AND type = $2",
       [req.user.id, type]
     );
     if (existing.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: `You already have a linked ${type} account.`,
-      });
+      return res.status(409).json({ success: false, message: `You already have a linked ${type} account.` });
     }
 
-    await conn.beginTransaction();
+    await client.query("BEGIN");
 
-    // Unset primary if this should be primary
     if (isPrimary) {
-      await conn.query(
-        "UPDATE payment_methods SET is_primary = 0 WHERE user_id = ?",
+      // is_primary is now BOOLEAN — use false instead of 0
+      await client.query(
+        "UPDATE payment_methods SET is_primary = false WHERE user_id = $1",
         [req.user.id]
       );
     }
 
-    const [result] = await conn.query(
+    // RETURNING id to get the new row's id
+    const { rows: result } = await client.query(
       `INSERT INTO payment_methods (user_id, type, account_number, account_name, is_primary)
-       VALUES (?, ?, ?, ?, ?)`,
-      [req.user.id, type, accountNumber.trim(), accountName?.trim() || null, isPrimary ? 1 : 0]
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [req.user.id, type, accountNumber.trim(), accountName?.trim() || null, isPrimary ? true : false]
     );
 
-    await conn.commit();
+    await client.query("COMMIT");
 
-    const [method] = await conn.query(
-      "SELECT * FROM payment_methods WHERE id = ?",
-      [result.insertId]
+    const { rows: method } = await client.query(
+      "SELECT * FROM payment_methods WHERE id = $1",
+      [result[0].id]
     );
     return res.status(201).json({ success: true, message: "Payment method linked.", method: method[0] });
   } catch (err) {
-    await conn.rollback();
+    await client.query("ROLLBACK");
     console.error("addPaymentMethod error:", err);
     return res.status(500).json({ success: false, message: "Could not link payment method." });
   } finally {
-    conn.release();
+    client.release();
   }
 };
 
 // ── PUT /api/payment-methods/:id/primary ─────────────────────
 const setPrimary = async (req, res) => {
-  const conn = await pool.getConnection();
+  const client = await pool.connect();
   try {
-    const [check] = await conn.query(
-      "SELECT id FROM payment_methods WHERE id = ? AND user_id = ?",
+    const { rows: check } = await client.query(
+      "SELECT id FROM payment_methods WHERE id = $1 AND user_id = $2",
       [req.params.id, req.user.id]
     );
     if (check.length === 0) {
       return res.status(404).json({ success: false, message: "Payment method not found." });
     }
 
-    await conn.beginTransaction();
-    await conn.query(
-      "UPDATE payment_methods SET is_primary = 0 WHERE user_id = ?",
+    await client.query("BEGIN");
+    // false/true instead of 0/1 — column is BOOLEAN now
+    await client.query(
+      "UPDATE payment_methods SET is_primary = false WHERE user_id = $1",
       [req.user.id]
     );
-    await conn.query(
-      "UPDATE payment_methods SET is_primary = 1 WHERE id = ?",
+    await client.query(
+      "UPDATE payment_methods SET is_primary = true WHERE id = $1",
       [req.params.id]
     );
-    await conn.commit();
+    await client.query("COMMIT");
 
     return res.json({ success: true, message: "Primary account updated." });
   } catch (err) {
-    await conn.rollback();
+    await client.query("ROLLBACK");
     console.error("setPrimary error:", err);
     return res.status(500).json({ success: false, message: "Could not update primary account." });
   } finally {
-    conn.release();
+    client.release();
   }
 };
 
 // ── DELETE /api/payment-methods/:id ──────────────────────────
 const deletePaymentMethod = async (req, res) => {
   try {
-    const [result] = await pool.query(
-      "DELETE FROM payment_methods WHERE id = ? AND user_id = ?",
+    // result.rowCount instead of result.affectedRows
+    const result = await pool.query(
+      "DELETE FROM payment_methods WHERE id = $1 AND user_id = $2",
       [req.params.id, req.user.id]
     );
-    if (result.affectedRows === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ success: false, message: "Payment method not found." });
     }
     return res.json({ success: true, message: "Payment method removed." });

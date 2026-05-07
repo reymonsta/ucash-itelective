@@ -7,66 +7,76 @@ const safeLimit = (v) => Math.min(100, Math.max(1, parseInt(v) || 20));
 // ── GET /api/admin/stats ──────────────────────────────────────
 const getDashboardStats = async (req, res) => {
   try {
-    // Student counts
-    const [[totals]] = await pool.query(`
+    // ── Student counts ──────────────────────────────────────
+    // MySQL: SUM(status = 'active') works because MySQL treats boolean as 0/1
+    // PostgreSQL: must use CASE WHEN ... THEN 1 ELSE 0 END instead
+    const { rows: totalsRows } = await pool.query(`
       SELECT
-        COUNT(*)                                            AS total_students,
-        SUM(status = 'active')                             AS active_students,
-        SUM(status = 'suspended')                          AS suspended_students
+        COUNT(*)                                                        AS total_students,
+        SUM(CASE WHEN status = 'active'    THEN 1 ELSE 0 END)          AS active_students,
+        SUM(CASE WHEN status = 'suspended' THEN 1 ELSE 0 END)          AS suspended_students
       FROM users WHERE role = 'student'
     `);
+    const totals = totalsRows[0];
 
-    // Transaction status counts
-    const [[txCounts]] = await pool.query(`
+    // ── Transaction status counts ───────────────────────────
+    const { rows: txRows } = await pool.query(`
       SELECT
-        SUM(status = 'pending')  AS pending_transactions,
-        SUM(status = 'verified') AS verified_transactions,
-        SUM(status = 'rejected') AS rejected_transactions
+        SUM(CASE WHEN status = 'pending'  THEN 1 ELSE 0 END) AS pending_transactions,
+        SUM(CASE WHEN status = 'verified' THEN 1 ELSE 0 END) AS verified_transactions,
+        SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_transactions
       FROM transactions
     `);
+    const txCounts = txRows[0];
 
-    // Total revenue (all-time verified payments)
-    const [[revTotal]] = await pool.query(`
+    // ── Total revenue ───────────────────────────────────────
+    const { rows: revTotalRows } = await pool.query(`
       SELECT COALESCE(SUM(amount), 0) AS total
       FROM transactions
       WHERE status = 'verified' AND type = 'payment'
     `);
 
-    // This month revenue
-    const [[revMonth]] = await pool.query(`
+    // ── This month revenue ──────────────────────────────────
+    // MySQL: YEAR(col) / MONTH(col)
+    // PostgreSQL: EXTRACT(YEAR FROM col) / EXTRACT(MONTH FROM col)
+    const { rows: revMonthRows } = await pool.query(`
       SELECT COALESCE(SUM(amount), 0) AS total
       FROM transactions
       WHERE status = 'verified'
         AND type = 'payment'
-        AND YEAR(created_at)  = YEAR(NOW())
-        AND MONTH(created_at) = MONTH(NOW())
+        AND EXTRACT(YEAR  FROM created_at) = EXTRACT(YEAR  FROM NOW())
+        AND EXTRACT(MONTH FROM created_at) = EXTRACT(MONTH FROM NOW())
     `);
 
-    // Monthly revenue for past 6 months
-    const [monthly] = await pool.query(`
+    // ── Monthly revenue for past 6 months ──────────────────
+    // MySQL: DATE_SUB(NOW(), INTERVAL 6 MONTH)
+    // PostgreSQL: NOW() - INTERVAL '6 months'
+    const { rows: monthly } = await pool.query(`
       SELECT
-        YEAR(created_at)  AS yr,
-        MONTH(created_at) AS mo,
-        SUM(amount)       AS total
+        EXTRACT(YEAR  FROM created_at) AS yr,
+        EXTRACT(MONTH FROM created_at) AS mo,
+        SUM(amount) AS total
       FROM transactions
       WHERE status = 'verified'
         AND type = 'payment'
-        AND created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
-      GROUP BY YEAR(created_at), MONTH(created_at)
+        AND created_at >= NOW() - INTERVAL '6 months'
+      GROUP BY
+        EXTRACT(YEAR  FROM created_at),
+        EXTRACT(MONTH FROM created_at)
       ORDER BY yr ASC, mo ASC
     `);
 
     return res.json({
       success: true,
       stats: {
-        totalStudents:        totals.total_students,
-        activeStudents:       totals.active_students,
-        suspendedStudents:    totals.suspended_students,
-        pendingTransactions:  txCounts.pending_transactions  || 0,
-        verifiedTransactions: txCounts.verified_transactions || 0,
-        rejectedTransactions: txCounts.rejected_transactions || 0,
-        totalRevenue:         revTotal.total,
-        monthRevenue:         revMonth.total,
+        totalStudents:        Number(totals.total_students),
+        activeStudents:       Number(totals.active_students),
+        suspendedStudents:    Number(totals.suspended_students),
+        pendingTransactions:  Number(txCounts.pending_transactions)  || 0,
+        verifiedTransactions: Number(txCounts.verified_transactions) || 0,
+        rejectedTransactions: Number(txCounts.rejected_transactions) || 0,
+        totalRevenue:         revTotalRows[0].total,
+        monthRevenue:         revMonthRows[0].total,
         monthlyRevenue:       monthly,
       },
     });
@@ -88,16 +98,25 @@ const getAllStudents = async (req, res) => {
     const conditions = ["u.role = 'student'"];
     const params     = [];
 
-    if (status) { conditions.push("u.status = ?"); params.push(status); }
+    // PostgreSQL uses $1, $2... so we track the index manually
+    let paramIndex = 1;
+
+    if (status) {
+      conditions.push(`u.status = $${paramIndex++}`);
+      params.push(status);
+    }
     if (search) {
       const like = `%${search}%`;
-      conditions.push("(u.name LIKE ? OR u.email LIKE ? OR u.student_id LIKE ?)");
+      conditions.push(
+        `(u.name ILIKE $${paramIndex} OR u.email ILIKE $${paramIndex + 1} OR u.student_id ILIKE $${paramIndex + 2})`
+        // ILIKE = case-insensitive LIKE in PostgreSQL (MySQL LIKE is already case-insensitive)
+      );
       params.push(like, like, like);
+      paramIndex += 3;
     }
 
     const where = conditions.join(" AND ");
 
-    // Whitelist sort columns to prevent SQL injection
     const sortMap = {
       name:      "u.name ASC",
       balance:   "w.balance DESC",
@@ -106,12 +125,15 @@ const getAllStudents = async (req, res) => {
     };
     const orderBy = sortMap[sortBy] || "u.name ASC";
 
-    const [[{ total }]] = await pool.query(
+    // COUNT query — no extra params beyond existing conditions
+    const { rows: countRows } = await pool.query(
       `SELECT COUNT(*) AS total FROM users u WHERE ${where}`,
       params
     );
+    const total = Number(countRows[0].total);
 
-    const [rows] = await pool.query(
+    // Main data query — append LIMIT and OFFSET as next numbered params
+    const { rows } = await pool.query(
       `SELECT u.id, u.name, u.email, u.phone, u.role,
               u.student_id, u.course, u.year, u.status, u.created_at,
               COALESCE(w.balance, 0) AS balance
@@ -119,7 +141,7 @@ const getAllStudents = async (req, res) => {
        LEFT JOIN wallets w ON w.user_id = u.id
        WHERE ${where}
        ORDER BY ${orderBy}
-       LIMIT ? OFFSET ?`,
+       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
       [...params, limit, offset]
     );
 
@@ -138,121 +160,90 @@ const getAllStudents = async (req, res) => {
 
 // ── POST /api/admin/students ──────────────────────────────────
 const createStudent = async (req, res) => {
-  const conn = await pool.getConnection();
+  const client = await pool.connect(); // pool.connect() instead of pool.getConnection()
   try {
     const { name, email, phone, password, studentId, course, year } = req.body;
 
     if (!name || !email || !password || !course || !year) {
-      return res.status(400).json({
-        success: false,
-        message: "Name, email, password, course, and year are required.",
-      });
+      return res.status(400).json({ success: false, message: "Name, email, password, course, and year are required." });
     }
-
     if (password.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: "Password must be at least 6 characters.",
-      });
+      return res.status(400).json({ success: false, message: "Password must be at least 6 characters." });
     }
 
     const allowedCourses = ["BSIT", "BSCS", "BSBA", "BSCE", "BSED", "BSACM"];
     if (!allowedCourses.includes(course)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid course selected.",
-      });
+      return res.status(400).json({ success: false, message: "Invalid course selected." });
     }
 
-    const [existing] = await conn.query(
-      "SELECT id FROM users WHERE email = ?",
+    const { rows: existing } = await client.query(
+      "SELECT id FROM users WHERE email = $1",
       [email.toLowerCase().trim()]
     );
     if (existing.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: "Email is already registered.",
-      });
+      return res.status(409).json({ success: false, message: "Email is already registered." });
     }
 
     let finalStudentId = studentId?.trim();
     if (finalStudentId) {
-      const [existingSid] = await conn.query(
-        "SELECT id FROM users WHERE student_id = ?",
+      const { rows: existingSid } = await client.query(
+        "SELECT id FROM users WHERE student_id = $1",
         [finalStudentId]
       );
       if (existingSid.length > 0) {
-        return res.status(409).json({
-          success: false,
-          message: "Student ID already exists.",
-        });
+        return res.status(409).json({ success: false, message: "Student ID already exists." });
       }
     } else {
-      const [countRes] = await conn.query(
+      const { rows: countRes } = await client.query(
         "SELECT COUNT(*) AS cnt FROM users WHERE role = 'student'"
       );
-      finalStudentId = `UC-${new Date().getFullYear()}-${String(countRes[0].cnt + 1).padStart(3, "0")}`;
+      // COUNT(*) returns a string in pg — wrap with Number()
+      finalStudentId = `UC-${new Date().getFullYear()}-${String(Number(countRes[0].cnt) + 1).padStart(3, "0")}`;
     }
 
     const hashed = await bcrypt.hash(password, 12);
 
-    await conn.beginTransaction();
+    await client.query("BEGIN");
 
-    const [userRes] = await conn.query(
+    // RETURNING id to get the new user's id (no insertId in pg)
+    const { rows: userRows } = await client.query(
       `INSERT INTO users (name, email, phone, password, role, student_id, course, year, status)
-       VALUES (?, ?, ?, ?, 'student', ?, ?, ?, 'active')`,
-      [
-        name.trim(),
-        email.toLowerCase().trim(),
-        phone?.trim() || null,
-        hashed,
-        finalStudentId,
-        course,
-        Number(year),
-      ]
+       VALUES ($1, $2, $3, $4, 'student', $5, $6, $7, 'active')
+       RETURNING id`,
+      [name.trim(), email.toLowerCase().trim(), phone?.trim() || null, hashed, finalStudentId, course, Number(year)]
     );
+    const userId = userRows[0].id;
 
-    const userId = userRes.insertId;
-
-    await conn.query(
-      "INSERT INTO wallets (user_id, balance) VALUES (?, 0)",
+    await client.query(
+      "INSERT INTO wallets (user_id, balance) VALUES ($1, 0)",
       [userId]
     );
 
-    const dueDate = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
-      .toISOString()
-      .slice(0, 10);
-
+    const dueDate = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const defaultFees = [
-      { type: "tuition", label: "Tuition Fee", total_amount: 10000 },
-      { type: "lab", label: "Laboratory Fee", total_amount: 1500 },
-      { type: "library", label: "Library Fee", total_amount: 500 },
-      { type: "misc", label: "Miscellaneous Fee", total_amount: 500 },
+      { type: "tuition", label: "Tuition Fee",      total_amount: 10000 },
+      { type: "lab",     label: "Laboratory Fee",   total_amount: 1500  },
+      { type: "library", label: "Library Fee",      total_amount: 500   },
+      { type: "misc",    label: "Miscellaneous Fee", total_amount: 500  },
     ];
 
     for (const fee of defaultFees) {
-      await conn.query(
+      await client.query(
         `INSERT INTO fees (user_id, type, label, total_amount, due_date)
-         VALUES (?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5)`,
         [userId, fee.type, fee.label, fee.total_amount, dueDate]
       );
     }
 
-    await conn.commit();
+    await client.query("COMMIT");
 
-    return res.status(201).json({
-      success: true,
-      message: "Student created successfully.",
-    });
+    return res.status(201).json({ success: true, message: "Student created successfully." });
   } catch (err) {
-    await conn.rollback();
+    await client.query("ROLLBACK");
     console.error("createStudent error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Could not create student.",
-    });
+    return res.status(500).json({ success: false, message: "Could not create student." });
   } finally {
-    conn.release();
+    client.release();
   }
 };
 
@@ -261,31 +252,38 @@ const updateStudent = async (req, res) => {
   try {
     const { name, email, phone, course, year, status } = req.body;
 
-    // Only allow updating student accounts
-    const [check] = await pool.query(
-      "SELECT id FROM users WHERE id = ? AND role = 'student'",
+    const { rows: check } = await pool.query(
+      "SELECT id FROM users WHERE id = $1 AND role = 'student'",
       [req.params.id]
     );
     if (check.length === 0) {
       return res.status(404).json({ success: false, message: "Student not found." });
     }
 
+    // COALESCE works the same in PostgreSQL ✅
     await pool.query(
       `UPDATE users
-       SET name   = COALESCE(?, name),
-           email  = COALESCE(?, email),
-           phone  = COALESCE(?, phone),
-           course = COALESCE(?, course),
-           year   = COALESCE(?, year),
-           status = COALESCE(?, status)
-       WHERE id = ?`,
-      [name || null, email?.toLowerCase().trim() || null,
-        phone?.trim() || null, course || null,
-        year || null, status || null, req.params.id]
+       SET name       = COALESCE($1, name),
+           email      = COALESCE($2, email),
+           phone      = COALESCE($3, phone),
+           course     = COALESCE($4, course),
+           year       = COALESCE($5, year),
+           status     = COALESCE($6, status),
+           updated_at = NOW()
+       WHERE id = $7`,
+      [
+        name || null,
+        email?.toLowerCase().trim() || null,
+        phone?.trim() || null,
+        course || null,
+        year || null,
+        status || null,
+        req.params.id,
+      ]
     );
 
-    const [updated] = await pool.query(
-      "SELECT id, name, email, phone, role, student_id, course, year, status FROM users WHERE id = ?",
+    const { rows: updated } = await pool.query(
+      "SELECT id, name, email, phone, role, student_id, course, year, status FROM users WHERE id = $1",
       [req.params.id]
     );
     return res.json({ success: true, message: "Student updated.", user: updated[0] });
@@ -298,8 +296,8 @@ const updateStudent = async (req, res) => {
 // ── PUT /api/admin/students/:id/suspend ──────────────────────
 const suspendStudent = async (req, res) => {
   try {
-    const [rows] = await pool.query(
-      "SELECT id, status FROM users WHERE id = ? AND role = 'student'",
+    const { rows } = await pool.query(
+      "SELECT id, status FROM users WHERE id = $1 AND role = 'student'",
       [req.params.id]
     );
     if (rows.length === 0) {
@@ -307,7 +305,10 @@ const suspendStudent = async (req, res) => {
     }
 
     const newStatus = rows[0].status === "active" ? "suspended" : "active";
-    await pool.query("UPDATE users SET status = ? WHERE id = ?", [newStatus, req.params.id]);
+    await pool.query(
+      "UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2",
+      [newStatus, req.params.id]
+    );
 
     return res.json({
       success: true,
@@ -323,12 +324,12 @@ const suspendStudent = async (req, res) => {
 // ── DELETE /api/admin/students/:id ───────────────────────────
 const deleteStudent = async (req, res) => {
   try {
-    // FK CASCADE handles wallets, fees, transactions automatically
-    const [result] = await pool.query(
-      "DELETE FROM users WHERE id = ? AND role = 'student'",
+    // result.rowCount instead of result.affectedRows
+    const result = await pool.query(
+      "DELETE FROM users WHERE id = $1 AND role = 'student'",
       [req.params.id]
     );
-    if (result.affectedRows === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ success: false, message: "Student not found." });
     }
     return res.json({ success: true, message: "Student deleted." });
@@ -338,11 +339,4 @@ const deleteStudent = async (req, res) => {
   }
 };
 
-module.exports = {
-  getDashboardStats,
-  getAllStudents,
-  createStudent,
-  updateStudent,
-  suspendStudent,
-  deleteStudent,
-};
+module.exports = { getDashboardStats, getAllStudents, createStudent, updateStudent, suspendStudent, deleteStudent };

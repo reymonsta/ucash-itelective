@@ -11,19 +11,25 @@ const DEFAULT_FEES = [
 
 const seed = async () => {
   await connectDB();
-  const conn = await pool.getConnection();
+
+  // pool.connect() instead of pool.getConnection()
+  const client = await pool.connect();
 
   try {
-    await conn.beginTransaction();
-    console.log("🌱 Seeding UCash MySQL database...\n");
+    // PostgreSQL transaction syntax: send BEGIN/COMMIT/ROLLBACK as plain queries
+    await client.query("BEGIN");
+    console.log("🌱 Seeding UCash PostgreSQL database...\n");
 
-    // Clear in correct FK order
-    await conn.query("DELETE FROM payment_methods");
-    await conn.query("DELETE FROM fees");
-    await conn.query("DELETE FROM transactions");
-    await conn.query("DELETE FROM wallets");
-    await conn.query("DELETE FROM users");
-    await conn.query("ALTER TABLE users AUTO_INCREMENT = 1");
+    // Clear tables in correct FK order (same logic, same SQL)
+    await client.query("DELETE FROM payment_methods");
+    await client.query("DELETE FROM fees");
+    await client.query("DELETE FROM transactions");
+    await client.query("DELETE FROM wallets");
+    await client.query("DELETE FROM users");
+
+    // Reset auto-increment counter (PostgreSQL uses sequences, not AUTO_INCREMENT)
+    // RESTART WITH 1 resets the SERIAL counter back to 1
+    await client.query("ALTER SEQUENCE users_id_seq RESTART WITH 1");
     console.log("  ✅ Cleared existing data");
 
     const hash = async (pw) => bcrypt.hash(pw, 12);
@@ -31,12 +37,20 @@ const seed = async () => {
       .toISOString().slice(0, 10);
 
     // ── Admin ────────────────────────────────────────────────
-    const [adminRes] = await conn.query(
-      `INSERT INTO users (name, email, phone, password, role) VALUES (?, ?, ?, ?, 'admin')`,
+    // RETURNING id  ← this is how PostgreSQL gives back the inserted row's id
+    // No more result.insertId — instead we read rows[0].id
+    const adminResult = await client.query(
+      `INSERT INTO users (name, email, phone, password, role)
+       VALUES ($1, $2, $3, $4, 'admin')
+       RETURNING id`,
       ["Admin User", "admin@uc.edu.ph", "09991234567", await hash("admin123")]
     );
-    const adminId = adminRes.insertId;
-    await conn.query(`INSERT INTO wallets (user_id, balance) VALUES (?, 0)`, [adminId]);
+    const adminId = adminResult.rows[0].id;  // ← rows[0].id, not insertId
+
+    await client.query(
+      `INSERT INTO wallets (user_id, balance) VALUES ($1, 0)`,
+      [adminId]
+    );
     console.log("  ✅ Admin: admin@uc.edu.ph / admin123");
 
     // ── Students ─────────────────────────────────────────────
@@ -52,23 +66,25 @@ const seed = async () => {
 
     const studentIds = [];
     for (const s of students) {
-      const [res] = await conn.query(
+      // $1..$8 placeholders, RETURNING id to get the new user's id
+      const result = await client.query(
         `INSERT INTO users (name, email, phone, password, role, student_id, course, year, status)
-         VALUES (?, ?, ?, ?, 'student', ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, 'student', $5, $6, $7, $8)
+         RETURNING id`,
         [s.name, s.email, s.phone, await hash(s.pw), s.sid, s.course, s.year, s.status]
       );
-      const uid = res.insertId;
+      const uid = result.rows[0].id;
       studentIds.push(uid);
 
-      await conn.query(
-        `INSERT INTO wallets (user_id, balance) VALUES (?, ?)`,
+      await client.query(
+        `INSERT INTO wallets (user_id, balance) VALUES ($1, $2)`,
         [uid, s.balance]
       );
 
       for (const fee of DEFAULT_FEES) {
-        await conn.query(
+        await client.query(
           `INSERT INTO fees (user_id, type, label, total_amount, paid_amount, due_date)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+           VALUES ($1, $2, $3, $4, $5, $6)`,
           [uid, fee.type, fee.label, fee.total_amount, fee.paid_amount, dueDate]
         );
       }
@@ -84,7 +100,6 @@ const seed = async () => {
       [juanId, "TXN-20240405-0001", 5000,  "topup",      "bdo",      "BDO Bank Transfer",       "verified", adminId],
       [juanId, "TXN-20240403-0001", 150,   "payment",    "library",  "Library Fee Payment",     "verified", adminId],
       [juanId, "TXN-20240330-0001", 2000,  "withdrawal", "maya",     "Withdrawal to Maya",      "verified", adminId],
-      // Pending for admin panel demo
       [studentIds[1], "TXN-20240414-0001", 1500,  "payment", "lab",     "Lab Fee Payment",     "pending", null],
       [studentIds[2], "TXN-20240413-0001", 3000,  "topup",   "gcash",   "GCash Top-up",        "pending", null],
       [studentIds[3], "TXN-20240413-0002", 10000, "payment", "tuition", "Tuition Fee Payment", "pending", null],
@@ -92,36 +107,41 @@ const seed = async () => {
 
     for (const row of txRows) {
       const [uid, code, amount, type, category, desc, status, verifier] = row;
-      await conn.query(
+      await client.query(
         `INSERT INTO transactions
-           (user_id, transaction_code, amount, type, category, description, status, verified_by, verified_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [uid, code, amount, type, category, desc, status, verifier,
-          verifier ? new Date() : null]
+           (user_id, transaction_code, amount, type, category, description,
+            status, verified_by, verified_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [uid, code, amount, type, category, desc, status,
+          verifier ?? null,           // $8 — null if no verifier
+          verifier ? new Date() : null // $9 — null if not verified
+        ]
       );
     }
     console.log("  ✅ Sample transactions created");
 
     // ── GCash linked for Juan ────────────────────────────────
-    await conn.query(
-      `INSERT INTO payment_methods (user_id, type, account_number, account_name, is_primary)
-       VALUES (?, 'gcash', '09171234567', 'Juan dela Cruz', 1)`,
+    // is_primary is now BOOLEAN: use true instead of 1
+    await client.query(
+      `INSERT INTO payment_methods
+         (user_id, type, account_number, account_name, is_primary)
+       VALUES ($1, 'gcash', '09171234567', 'Juan dela Cruz', true)`,
       [juanId]
     );
     console.log("  ✅ Payment method linked for Juan");
 
-    await conn.commit();
+    await client.query("COMMIT"); // ← PostgreSQL commit
     console.log("\n──────────────────────────────────────");
     console.log("🎉 Seed complete! Demo credentials:\n");
     console.log("  Student : juan@uc.edu.ph  / student123");
     console.log("  Admin   : admin@uc.edu.ph / admin123");
     console.log("──────────────────────────────────────\n");
   } catch (err) {
-    await conn.rollback();
+    await client.query("ROLLBACK"); // ← PostgreSQL rollback
     console.error("❌ Seed failed:", err.message);
     process.exit(1);
   } finally {
-    conn.release();
+    client.release(); // ← same concept, release back to pool
     process.exit(0);
   }
 };
