@@ -18,11 +18,11 @@ const TX_ICON = {
 };
 
 export default function StudentDashboard({ user, onNavigate }) {
-  const [balance, setBalance]         = useState(0);
-  const [fees, setFees]               = useState([]);
+  const [balance, setBalance]           = useState(0);
+  const [fees, setFees]                 = useState([]);
   const [transactions, setTransactions] = useState([]);
-  const [loading, setLoading]         = useState(true);
-  const [error, setError]             = useState("");
+  const [loading, setLoading]           = useState(true);
+  const [error, setError]               = useState("");
 
   const loadData = useCallback(async () => {
     setLoading(true); setError("");
@@ -47,10 +47,12 @@ export default function StudentDashboard({ user, onNavigate }) {
     return () => window.removeEventListener("ucash:data-changed", handler);
   }, [loadData]);
 
+  // ✅ FIXED: was using fee.remaining_amount which was always 0
   const outstanding = useMemo(
-    () => fees.reduce((sum, fee) => sum + Number(fee.remaining_amount || 0), 0),
+    () => fees.reduce((sum, fee) => sum + (Number(fee.total_amount || 0) - Number(fee.paid_amount || 0)), 0),
     [fees]
   );
+
   const notifications = useMemo(
     () => transactions.filter((tx) => tx.status === "pending" || tx.status === "rejected").length,
     [transactions]
@@ -64,7 +66,7 @@ export default function StudentDashboard({ user, onNavigate }) {
         <div>
           <p className="text-xs font-medium text-slate-500 uppercase tracking-widest">Student Portal</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-white sm:text-3xl">
-            Hello, {user?.name?.split(" ")[0]} 
+            Hello, {user?.name?.split(" ")[0]}
           </h1>
         </div>
         <button
@@ -88,7 +90,6 @@ export default function StudentDashboard({ user, onNavigate }) {
 
       {/* Balance + Outstanding */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {/* Wallet balance — hero card */}
         <div className="relative overflow-hidden rounded-3xl border border-indigo-500/20 bg-gradient-to-br from-indigo-600/20 via-violet-600/10 to-transparent p-6 backdrop-blur-sm">
           <div className="pointer-events-none absolute -right-8 -top-8 h-40 w-40 rounded-full bg-indigo-500/10 blur-2xl" />
           <div className="pointer-events-none absolute -bottom-8 -left-4 h-32 w-32 rounded-full bg-violet-500/10 blur-2xl" />
@@ -106,7 +107,6 @@ export default function StudentDashboard({ user, onNavigate }) {
           </div>
         </div>
 
-        {/* Outstanding fees */}
         <div className="relative overflow-hidden rounded-3xl border border-rose-500/20 bg-gradient-to-br from-rose-600/10 via-pink-600/5 to-transparent p-6 backdrop-blur-sm">
           <div className="pointer-events-none absolute -right-8 -top-8 h-40 w-40 rounded-full bg-rose-500/10 blur-2xl" />
           <p className="relative text-xs font-semibold uppercase tracking-widest text-rose-300">Outstanding Fees</p>
